@@ -1,13 +1,159 @@
-// API configuration and services
-// Prefer env var if provided; fallback to localhost for development
-const API_BASE_URL =
-  (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_API_BASE_URL)
-    ? String(process.env.NEXT_PUBLIC_API_BASE_URL)
-    : 'http://localhost:8080';
+/**
+ * API Utility Functions
+ * Handles all HTTP requests to the backend with proper error handling
+ */
 
-// Allow overriding endpoint paths to match backend repo without code edits
-const LOGIN_PATH = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_LOGIN_PATH) || '/api/auth/login';
-const REGISTER_PATH = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_REGISTER_PATH) || '/api/auth/register';
+import { z } from 'zod';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080';
+
+/**
+ * Helper function to convert relative image paths to full URLs
+ * Backend returns paths like "/uploads/vehicles/image.jpg"
+ * We need to convert to "http://localhost:8080/uploads/vehicles/image.jpg"
+ */
+export function getFullImageUrl(imagePath: string | null | undefined): string {
+  if (!imagePath) return '';
+  
+  // If already a full URL (starts with http:// or https://), return as is
+  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+    return imagePath;
+  }
+  
+  // If relative path, prepend API_BASE_URL
+  return `${API_BASE_URL}${imagePath}`;
+}
+
+export interface ApiResponse<T> {
+  success: boolean;
+  message: string;
+  data: T;
+}
+
+// ============================================================================
+// UNIFIED API CLIENT WITH ZOD VALIDATION
+// ============================================================================
+
+class ApiClient {
+  private readonly baseUrl: string;
+
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+  }
+
+  /**
+   * Generic request method with Zod validation
+   */
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    schema?: z.ZodType<T>
+  ): Promise<T> {
+    try {
+      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+        ...options,
+        credentials: 'include',
+        headers: {
+          ...options.headers,
+        },
+      });
+
+      const contentType = response.headers.get('content-type');
+      if (!contentType?.includes('application/json')) {
+        if (response.status === 403) {
+          throw new Error('Unauthorized: Please login first');
+        }
+        throw new Error(`Server error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (response.status === 403) {
+          throw new Error('Bạn cần đăng nhập để truy cập tài nguyên này');
+        }
+        throw new Error(data.message || 'Something went wrong');
+      }
+
+      // Validate with Zod if schema provided
+      if (schema) {
+        return schema.parse(data);
+      }
+
+      return data;
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.error('API Response validation error:', error.issues);
+        throw new Error('Invalid response from server');
+      }
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Network error occurred');
+    }
+  }
+
+  async get<T>(endpoint: string, schema?: z.ZodType<T>): Promise<T> {
+    return this.request<T>(endpoint, { method: 'GET' }, schema);
+  }
+
+  async post<T>(endpoint: string, body: unknown, schema?: z.ZodType<T>): Promise<T> {
+    return this.request<T>(
+      endpoint,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      schema
+    );
+  }
+
+  async put<T>(endpoint: string, body: unknown, schema?: z.ZodType<T>): Promise<T> {
+    return this.request<T>(
+      endpoint,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      schema
+    );
+  }
+
+  async patch<T>(endpoint: string, body: unknown, schema?: z.ZodType<T>): Promise<T> {
+    return this.request<T>(
+      endpoint,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      schema
+    );
+  }
+
+  async delete(endpoint: string): Promise<void> {
+    await this.request(endpoint, { method: 'DELETE' });
+  }
+
+  async postFormData<T>(endpoint: string, formData: FormData, schema?: z.ZodType<T>): Promise<T> {
+    return this.request<T>(
+      endpoint,
+      {
+        method: 'POST',
+        body: formData,
+      },
+      schema
+    );
+  }
+}
+
+export const apiClient = new ApiClient(API_BASE_URL);
+
+// ============================================================================
+// LEGACY API FUNCTIONS (keep for backward compatibility)
+// ============================================================================
 
 export interface LoginRequest {
   email: string;
@@ -15,344 +161,995 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  success: boolean;
-  message: string;
   userId: number;
-  fullName: string;
   email: string;
+  fullName: string;
   role: string;
+  verificationStatus: string;
+  sessionId: string;
 }
 
 export interface RegisterRequest {
+  fullName: string;
   email: string;
   password: string;
-  fullName: string;
-  username?: string;
-  // Backend RegisterRequest fields
-  cccd?: string;
-  driverLicense?: string;
-  birthday?: string; // LocalDate format: "YYYY-MM-DD"
-  location?: string;
-  cccdFrontBase64?: string;
-  cccdBackBase64?: string;
-  driverLicenseBase64?: string;
+  cccd: string;
+  driverLicense: string;
+  birthday: string;
+  location: string;
+  cccdFront: File;
+  cccdBack: File;
+  driverLicenseImg: File;
 }
 
-export interface RegisterResponse {
-  success: boolean;
-  message: string;
-  userId?: number;
-}
-
-export class ApiError extends Error {
-  public status?: number;
-
-  constructor(message: string, status?: number) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-  }
-}
-
-class ApiService {
-  private baseURL: string;
-
-  constructor(baseURL: string) {
-    this.baseURL = baseURL;
-  }
-
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const url = `${this.baseURL}${endpoint}`;
-    
-    const config: RequestInit = {
+/**
+ * Generic fetch wrapper with credentials and error handling
+ */
+async function apiFetch<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<ApiResponse<T>> {
+  try {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      credentials: 'include', // Important for session cookies
       headers: {
-        'Content-Type': 'application/json',
         ...options.headers,
       },
-      ...options,
-    };
+    });
 
-    try {
-      const response = await fetch(url, config);
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new ApiError(
-          errorData.message || `HTTP error! status: ${response.status}`,
-          response.status
-        );
-      }
-
-      return await response.json();
-    } catch (error) {
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      
-      // Handle network errors specifically
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        throw new ApiError(
-          'Không thể kết nối đến server. Vui lòng kiểm tra kết nối mạng hoặc đảm bảo backend đang chạy.',
-          0
-        );
-      }
-      
-      throw new ApiError(
-        error instanceof Error ? error.message : 'An unexpected error occurred'
-      );
-    }
-  }
-
-  // Generic helpers for common methods
-  async get<T>(endpoint: string, init?: RequestInit): Promise<T> {
-    return this.request<T>(endpoint, { method: 'GET', ...init });
-  }
-
-  async post<T, B = unknown>(endpoint: string, body?: B, init?: RequestInit): Promise<T> {
-    return this.request<T>(endpoint, { method: 'POST', body: body ? JSON.stringify(body) : undefined, ...init });
-  }
-
-  async put<T, B = unknown>(endpoint: string, body?: B, init?: RequestInit): Promise<T> {
-    return this.request<T>(endpoint, { method: 'PUT', body: body ? JSON.stringify(body) : undefined, ...init });
-  }
-
-  async del<T>(endpoint: string, init?: RequestInit): Promise<T> {
-    return this.request<T>(endpoint, { method: 'DELETE', ...init });
-  }
-
-  async login(credentials: LoginRequest): Promise<LoginResponse> {
-    // Backend trả về JSON object với LoginResponse format
-    const url = `${this.baseURL}${LOGIN_PATH}`;
-    const config: RequestInit = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(credentials),
-    };
-
-    try {
-      const response = await fetch(url, config);
-      
-      // Kiểm tra Content-Type
+    // Check if response is JSON
       const contentType = response.headers.get('content-type');
-      
-      // Xử lý response dựa trên Content-Type
-      if (contentType && contentType.includes('application/json')) {
-        // Backend trả về JSON (format chuẩn)
-        const data = await response.json();
-        
-        if (!response.ok) {
-          // HTTP error (400, 401, etc.)
-          return {
-            success: false,
-            message: data.message || `HTTP error! status: ${response.status}`,
-            userId: 0,
-            fullName: "",
-            email: "",
-            role: ""
-          };
+      if (!contentType?.includes('application/json')) {
+        if (response.status === 403) {
+          throw new Error('Unauthorized: Please login first');
         }
+        throw new Error(`Server error: ${response.status} ${response.statusText}`);
+      }
 
-        // HTTP 200 OK - Backend trả về LoginResponse đầy đủ
-        return {
-          success: data.success || true,
-          message: data.message || "Đăng nhập thành công",
-          userId: data.userId || 0,
-          fullName: data.fullName || "",
-          email: data.email || credentials.email,
-          role: data.role || "user"
-        };
-      } else {
-        // Backend trả về plain text (format hiện tại)
-        const text = await response.text();
-        
-        if (!response.ok) {
-          // HTTP error
-          return {
-            success: false,
-            message: text || `HTTP error! status: ${response.status}`,
-            userId: 0,
-            fullName: "",
-            email: "",
-            role: ""
-          };
-        }
-
-        // HTTP 200 OK - Backend trả về text message
-        // Kiểm tra message để xác định success/failure
-        const isSuccess = text.toLowerCase().includes('thành công') || 
-                         text.toLowerCase().includes('success');
-        
-        if (isSuccess) {
-          // Đăng nhập thành công - nhưng thiếu thông tin user
-          // Cần lấy thông tin user từ credentials hoặc API khác
-          return {
-            success: true,
-            message: text,
-            userId: 0, // Backend không trả về userId
-            fullName: "", // Backend không trả về fullName
-            email: credentials.email,
-            role: "user" // Mặc định là user
-          };
-        } else {
-          // Đăng nhập thất bại
-          return {
-            success: false,
-            message: text,
-            userId: 0,
-            fullName: "",
-            email: "",
-            role: ""
-          };
-        }
+      const data = await response.json();    if (!response.ok) {
+      if (response.status === 403) {
+        throw new Error('Bạn cần đăng nhập để truy cập tài nguyên này');
       }
-    } catch (error) {
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        throw new ApiError(
-          'Không thể kết nối đến server. Vui lòng kiểm tra kết nối mạng hoặc đảm bảo backend đang chạy.',
-          0
-        );
-      }
-      
-      // Xử lý lỗi JSON parsing
-      if (error instanceof SyntaxError) {
-        throw new ApiError(
-          `Lỗi parse JSON từ server. Backend có thể đang trả về HTML thay vì JSON.\n` +
-          `Vui lòng kiểm tra backend tại ${this.baseURL}${LOGIN_PATH}`,
-          0
-        );
-      }
-      
-      throw new ApiError(
-        error instanceof Error ? error.message : 'An unexpected error occurred'
-      );
+      throw new Error(data.message || 'Something went wrong');
     }
-  }
 
-  async register(payload: RegisterRequest): Promise<RegisterResponse> {
-    // Backend trả về String, không phải JSON object
-    const url = `${this.baseURL}${REGISTER_PATH}`;
-    const config: RequestInit = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    };
-
-    try {
-      const response = await fetch(url, config);
-      
-      if (!response.ok) {
-        throw new ApiError(`HTTP error! status: ${response.status}`, response.status);
-      }
-
-      // Backend trả về String: "success" hoặc error message
-      const message = await response.text();
-      
-      if (message === "success") {
-        return {
-          success: true,
-          message: "Đăng ký thành công!"
-        };
-      } else {
-        // Error message: "Email đã tồn tại!", "CCCD đã tồn tại!"
-        return {
-          success: false,
-          message: message
-        };
-      }
-    } catch (error) {
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        throw new ApiError(
-          'Không thể kết nối đến server. Vui lòng kiểm tra kết nối mạng hoặc đảm bảo backend đang chạy.',
-          0
-        );
-      }
-      
-      throw new ApiError(
-        error instanceof Error ? error.message : 'An unexpected error occurred'
-      );
+    return data;
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
     }
-  }
-
-  /**
-   * Tạo nhóm chia sẻ xe mới
-   * Backend endpoint: POST /api/groups/create?userId={userId}
-   */
-  async createGroup(request: CreateGroupRequest, userId: number): Promise<CreateGroupResponse> {
-    const url = `${this.baseURL}/api/groups/create?userId=${userId}`;
-    const config: RequestInit = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(request),
-    };
-
-    try {
-      const response = await fetch(url, config);
-      
-      // Backend trả về String message
-      const message = await response.text();
-      
-      if (!response.ok) {
-        return {
-          success: false,
-          message: message || `HTTP error! status: ${response.status}`
-        };
-      }
-
-      // Success - Backend trả về message
-      return {
-        success: true,
-        message: message || "Tạo nhóm thành công!"
-      };
-    } catch (error) {
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        throw new ApiError(
-          'Không thể kết nối đến server. Vui lòng kiểm tra kết nối mạng hoặc đảm bảo backend đang chạy.',
-          0
-        );
-      }
-      
-      throw new ApiError(
-        error instanceof Error ? error.message : 'An unexpected error occurred'
-      );
-    }
+    throw new Error('Network error occurred');
   }
 }
 
-// Types for Create Group API
-export interface CreateGroupRequest {
+/**
+ * Login API call
+ */
+export async function login(credentials: LoginRequest): Promise<ApiResponse<LoginResponse>> {
+  return apiFetch<LoginResponse>('/api/auth/login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(credentials),
+  });
+}
+
+/**
+ * Register API call with multipart/form-data
+ */
+export async function register(data: RegisterRequest): Promise<ApiResponse<string>> {
+  const formData = new FormData();
+  
+  formData.append('fullName', data.fullName);
+  formData.append('email', data.email);
+  formData.append('password', data.password);
+  formData.append('cccd', data.cccd);
+  formData.append('driverLicense', data.driverLicense);
+  formData.append('birthday', data.birthday);
+  formData.append('location', data.location);
+  formData.append('cccdFront', data.cccdFront);
+  formData.append('cccdBack', data.cccdBack);
+  formData.append('driverLicenseImg', data.driverLicenseImg);
+
+  return apiFetch<string>('/api/auth/register', {
+    method: 'POST',
+    body: formData,
+    // Don't set Content-Type header, browser will set it with boundary
+  });
+}
+
+/**
+ * Check login status
+ */
+export async function checkLoginStatus(): Promise<ApiResponse<{
+  isAuthenticated: boolean;
+  userId?: number;
+  email?: string;
+  role?: string;
+  sessionId: string;
+}>> {
+  return apiFetch('/api/auth/status', {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get current user profile
+ */
+export async function getCurrentUser(): Promise<ApiResponse<{
+  id: number;
+  fullName: string;
+  email: string;
+  cccd: string;
+  driverLicense: string;
+  birthday: string;
+  role: string;
+  verificationStatus: string;
+  createdAt: string;
+  location: string;
+  cccdFrontUrl: string;
+  cccdBackUrl: string;
+  driverLicenseUrl: string;
+}>> {
+  return apiFetch('/api/auth/profile', {
+    method: 'GET',
+  });
+}
+
+/**
+ * Update user profile
+ */
+export async function updateUserProfile(data: {
+  fullName: string;
+  location: string;
+  birthday: string;
+  driverLicense: string;
+}): Promise<ApiResponse<{
+  id: number;
+  fullName: string;
+  email: string;
+  cccd: string;
+  driverLicense: string;
+  birthday: string;
+  role: string;
+  verificationStatus: string;
+  createdAt: string;
+  location: string;
+  cccdFrontUrl: string;
+  cccdBackUrl: string;
+  driverLicenseUrl: string;
+}>> {
+  return apiFetch('/api/profile', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Logout API call
+ */
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${API_BASE_URL}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+  } catch (error) {
+    console.error('Logout error:', error);
+  }
+}
+
+// ============= USER MANAGEMENT APIs (Admin) =============
+
+/**
+ * Get all users (Admin only)
+ */
+export async function getAllUsers(): Promise<ApiResponse<User[]>> {
+  return apiFetch<User[]>('/api/users', {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get user detail by ID (Admin only)
+ */
+export async function getUserDetail(userId: number): Promise<ApiResponse<User>> {
+  return apiFetch<User>(`/api/users/${userId}`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Update user (Admin only)
+ */
+export async function updateUser(
+  userId: number,
+  data: {
+    fullName: string;
+    email: string;
+    cccd: string;
+    driverLicense: string;
+    birthday: string;
+    role: string;
+    verificationStatus: string;
+    location: string;
+  }
+): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/users/${userId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Delete user (Admin only)
+ */
+export async function deleteUser(userId: number): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/users/${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ============= GROUP APIs =============
+
+export interface Group {
+  id: number;
+  vehicleId: number;
+  vehicleBrand: string;
+  vehicleModel: string;
+  vehicleLicensePlate: string;
+  name: string;
+  description: string;
+  status: string;
+  estimatedValue: number;
+  currentOwnership: number;
+  maxMembers: number;
+  currentMembers: number;
+  minOwnershipPercentage: number;
+  createdAt: string;
+  approvalStatus: string;
+  contractUrl: string;
+  rejectReason: string;
+  createdBy: number; // Deprecated - use createdById
+  createdById: number; // New field from API
+  createdByName: string;
+  approvedBy: number;
+  approvedById: number; // New field from API
+  approvedByName: string;
+  isLocked?: boolean; // Added for member management
+  balance?: number; // Added for financial management
+  totalOwnershipPercentage?: number; // Added from API
+}
+
+/**
+ * Get all groups (public endpoint)
+ */
+export async function getAllGroups(): Promise<ApiResponse<Group[]>> {
+  return apiFetch<Group[]>('/api/groups', {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get groups created by current user
+ */
+export async function getMyGroups(): Promise<ApiResponse<Group[]>> {
+  return apiFetch<Group[]>('/api/groups/my-groups', {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get group detail by ID
+ */
+export async function getGroupDetail(groupId: number): Promise<ApiResponse<Group>> {
+  return apiFetch<Group>(`/api/groups/${groupId}`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Create a new group
+ */
+export async function createGroup(data: {
   vehicleId: number;
   groupName: string;
   description: string;
   estimatedValue: number;
   maxMembers: number;
   minOwnershipPercentage: number;
+}): Promise<ApiResponse<string>> {
+  return apiFetch<string>('/api/groups', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
 }
 
-export interface CreateGroupResponse {
-  success: boolean;
-  message: string;
+/**
+ * Update group (Admin only)
+ */
+export async function updateGroup(
+  groupId: number,
+  data: {
+    name: string;
+    description: string;
+    status: string;
+    estimatedValue: number;
+    maxMembers: number;
+    minOwnershipPercentage: number;
+    approvalStatus: string;
+    contractUrl?: string;
+  }
+): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/groups/${groupId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
 }
 
-// Create and export API service instance
-export const apiService = new ApiService(API_BASE_URL);
+/**
+ * Update group status (Owner can update status and isLocked)
+ */
+export async function updateGroupStatus(
+  groupId: number,
+  data: {
+    status?: string;
+    isLocked?: boolean;
+  }
+): Promise<ApiResponse<Group>> {
+  return apiFetch<Group>(`/api/groups/${groupId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Delete group (Admin only)
+ */
+export async function deleteGroup(groupId: number): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/groups/${groupId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ============= VEHICLE APIs =============
+
+export interface Vehicle {
+  vehicleId: number;
+  model: string;
+  brand: string;
+  licensePlate: string;
+  location: string;
+  status: string;
+  registrationInfo: string;
+  batteryCapacity: number;
+  yearOfManufacture: number;
+  imageUrl1: string;
+  imageUrl2: string;
+  imageUrl3: string;
+  verificationStatus: string;
+  rejectReason: string;
+  verifiedAt: string;
+  ownerId: number;
+  ownerName: string;
+  verifiedByName: string;
+}
+
+/**
+ * Get all vehicles (with optional ownerId filter)
+ */
+export async function getVehicles(ownerId?: number): Promise<ApiResponse<Vehicle[]>> {
+  const url = ownerId ? `/api/vehicles?ownerId=${ownerId}` : '/api/vehicles';
+  return apiFetch<Vehicle[]>(url, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get vehicle detail by ID
+ */
+export async function getVehicleDetail(vehicleId: number): Promise<ApiResponse<Vehicle>> {
+  return apiFetch<Vehicle>(`/api/vehicles/${vehicleId}`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Upload vehicle images
+ * Returns URLs for uploaded images
+ */
+export async function uploadVehicleImages(data: {
+  image1: File;
+  image2?: File;
+  image3?: File;
+}): Promise<ApiResponse<Record<string, string>>> {
+  const formData = new FormData();
+  formData.append('image1', data.image1);
+  if (data.image2) formData.append('image2', data.image2);
+  if (data.image3) formData.append('image3', data.image3);
+
+  return apiFetch<Record<string, string>>(
+    '/api/vehicles/upload-images',
+    {
+      method: 'POST',
+      body: formData,
+      // Don't set Content-Type header - browser will set it with boundary for multipart/form-data
+    }
+  );
+}
+
+/**
+ * Create a new vehicle
+ */
+export async function createVehicle(data: {
+  model: string;
+  brand: string;
+  licensePlate: string;
+  location: string;
+  status: string;
+  registrationInfo: string;
+  batteryCapacity: number;
+  yearOfManufacture: number;
+  imageUrl1: string;
+  imageUrl2: string;
+  imageUrl3: string;
+  ownerId: number;
+}): Promise<ApiResponse<string>> {
+  return apiFetch<string>('/api/vehicles', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Update vehicle information (Admin only)
+ */
+export async function updateVehicle(
+  vehicleId: number,
+  data: {
+    model: string;
+    brand: string;
+    licensePlate: string;
+    location: string;
+    status: string;
+    registrationInfo: string;
+    batteryCapacity: number;
+    yearOfManufacture: number;
+    imageUrl1: string;
+    imageUrl2: string;
+    imageUrl3: string;
+    ownerId: number;
+  }
+): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/vehicles/${vehicleId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Delete vehicle (Admin only)
+ */
+export async function deleteVehicle(vehicleId: number): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/vehicles/${vehicleId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ============= ADMIN APIs =============
+
+export interface User {
+  id: number;
+  fullName: string;
+  email: string;
+  passwordHash?: string;
+  cccd: string;
+  driverLicense: string;
+  birthday: string;
+  role: string;
+  verificationStatus: string;
+  createdAt: string;
+  location: string;
+  cccdFrontUrl: string;
+  cccdBackUrl: string;
+  driverLicenseUrl: string;
+}
+
+export interface PendingGroup {
+  id: number;
+  vehicle: {
+    id: number;
+    model: string;
+    brand: string;
+    licensePlate: string;
+    location: string;
+    status: string;
+    owner: User;
+    registrationInfo: string;
+    batteryCapacity: number;
+    yearOfManufacture: number;
+    imageUrl1: string;
+    imageUrl2: string;
+    imageUrl3: string;
+    verificationStatus: string;
+    verifiedBy: User | null;
+    verifiedAt: string;
+    rejectReason: string;
+    createdAt: string;
+  };
+  createdBy: User;
+  approvedBy: User | null;
+  name: string;
+  description: string;
+  status: string;
+  estimatedValue: number;
+  createdAt: string;
+  approvalStatus: string;
+  rejectReason: string;
+  maxMembers: number;
+  minOwnershipPercentage: number;
+  totalOwnershipPercentage: number;
+  isLocked: boolean;
+  contractUrl: string;
+  balance: number;
+}
+
+export interface PendingVehicle {
+  id: number;
+  model: string;
+  brand: string;
+  licensePlate: string;
+  location: string;
+  status: string;
+  owner: User;
+  registrationInfo: string;
+  batteryCapacity: number;
+  yearOfManufacture: number;
+  imageUrl1: string;
+  imageUrl2: string;
+  imageUrl3: string;
+  verificationStatus: string;
+  verifiedBy: User | null;
+  verifiedAt: string;
+  rejectReason: string;
+  createdAt: string;
+}
+
+/**
+ * Get pending groups for admin approval
+ */
+export async function getPendingGroups(): Promise<ApiResponse<PendingGroup[]>> {
+  return apiFetch<PendingGroup[]>('/api/admin/pending-groups', {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get pending vehicles for admin approval
+ */
+export async function getPendingVehicles(): Promise<ApiResponse<PendingVehicle[]>> {
+  return apiFetch<PendingVehicle[]>('/api/admin/pending-vehicles', {
+    method: 'GET',
+  });
+}
+
+/**
+ * Approve or reject a group
+ */
+export async function approveGroup(
+  groupId: number,
+  approved: boolean,
+  reason?: string
+): Promise<ApiResponse<string>> {
+  const params = new URLSearchParams({
+    groupId: groupId.toString(),
+    approved: approved.toString(),
+  });
+  
+  if (reason) {
+    params.append('reason', reason);
+  }
+
+  return apiFetch<string>(`/api/admin/approve-group?${params.toString()}`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Approve or reject a vehicle
+ */
+export async function approveVehicle(
+  vehicleId: number,
+  approved: boolean,
+  reason?: string
+): Promise<ApiResponse<string>> {
+  const params = new URLSearchParams({
+    vehicleId: vehicleId.toString(),
+    approved: approved.toString(),
+  });
+  
+  if (reason) {
+    params.append('reason', reason);
+  }
+
+  return apiFetch<string>(`/api/admin/approve-vehicle?${params.toString()}`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Update vehicle verification status (admin only)
+ */
+export async function updateVehicleVerificationStatus(
+  vehicleId: number,
+  verificationStatus: string
+): Promise<ApiResponse<Vehicle>> {
+  return apiFetch<Vehicle>(`/api/vehicles/${vehicleId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ verificationStatus }),
+  });
+}
+
+/**
+ * Update vehicle status (admin only)
+ */
+export async function updateVehicleStatus(
+  vehicleId: number,
+  status: string
+): Promise<ApiResponse<Vehicle>> {
+  return apiFetch<Vehicle>(`/api/vehicles/${vehicleId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status }),
+  });
+}
+
+// ============= MEMBER APIs =============
+
+export interface Member {
+  id: number;
+  group: Group;
+  user: User;
+  ownershipPercentage: number;
+  joinStatus: string;
+  joinDate: string;
+  reason: string | null;
+  proposedOwnershipPercentage: number;
+  counterOfferPercentage: number | null;
+  counterOfferStatus: string | null;
+}
+
+/**
+ * Get all members (optionally filter by groupId)
+ */
+export async function getMembers(groupId?: number): Promise<ApiResponse<Member[]>> {
+  const url = groupId ? `/api/members?groupId=${groupId}` : '/api/members';
+  return apiFetch<Member[]>(url, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get group members with detailed information
+ * Uses the specific endpoint: GET /api/groups/{groupId}/members
+ */
+export async function getGroupMembers(groupId: number): Promise<ApiResponse<Member[]>> {
+  return apiFetch<Member[]>(`/api/groups/${groupId}/members`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get member detail by ID
+ */
+export async function getMemberDetail(memberId: number): Promise<ApiResponse<Member>> {
+  return apiFetch<Member>(`/api/members/${memberId}`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Join a group (send join request)
+ * Uses the correct endpoint: POST /api/groups/{groupId}/join
+ */
+export async function joinGroup(data: {
+  groupId: number;
+  proposedOwnershipPercentage: number;
+  reason: string;
+}): Promise<ApiResponse<Member>> {
+  const { groupId, ...bodyData } = data;
+  return apiFetch<Member>(`/api/groups/${groupId}/join`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(bodyData),
+  });
+}
+
+/**
+ * Create a new member (join group request)
+ * @deprecated Use joinGroup() instead. This endpoint is for admin use only.
+ * Try sending groupId as query parameter AND in body for compatibility
+ */
+export async function createMember(data: {
+  groupId: number;
+  userId?: number;
+  proposedOwnershipPercentage: number;
+  reason: string;
+}): Promise<ApiResponse<Member>> {
+  // Send groupId both as query param and in body to handle different backend expectations
+  const { groupId } = data;
+  return apiFetch<Member>(`/api/members?groupId=${groupId}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data), // Keep full data including groupId
+  });
+}
+
+/**
+ * Update member (approve/reject/counter-offer)
+ */
+export async function updateMember(
+  memberId: number,
+  data: {
+    joinStatus?: string;
+    ownershipPercentage?: number;
+    counterOfferPercentage?: number;
+    counterOfferStatus?: string;
+    rejectReason?: string;
+  }
+): Promise<ApiResponse<Member>> {
+  return apiFetch<Member>(`/api/members/${memberId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Delete member (remove from group)
+ */
+export async function deleteMember(memberId: number): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/members/${memberId}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * Review member request (Owner only)
+ * @param groupId - Group ID
+ * @param memberId - Member ID to review
+ * @param action - 'approve' | 'counter_offer' | 'reject'
+ * @param counterOfferPercentage - Required when action = 'counter_offer'
+ */
+export async function reviewMemberRequest(
+  groupId: number,
+  memberId: number,
+  data: {
+    action: 'approve' | 'counter_offer' | 'reject';
+    counterOfferPercentage?: number;
+  }
+): Promise<ApiResponse<Member>> {
+  return apiFetch<Member>(`/api/groups/${groupId}/members/${memberId}/review`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Member respond to counter offer
+ */
+export async function respondToCounterOffer(
+  groupId: number,
+  memberId: number,
+  accept: boolean
+): Promise<ApiResponse<Member>> {
+  return apiFetch<Member>(`/api/groups/${groupId}/members/${memberId}/respond-counter-offer`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ accept }),
+  });
+}
+
+/**
+ * Leave group (member voluntarily leaves)
+ */
+export async function leaveGroup(groupId: number): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/groups/${groupId}/leave`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Get available ownership for a group
+ */
+export async function getAvailableOwnership(groupId: number): Promise<ApiResponse<number>> {
+  return apiFetch<number>(`/api/groups/${groupId}/available-ownership`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get my ownership in a group
+ */
+export async function getMyOwnership(groupId: number): Promise<ApiResponse<Member>> {
+  return apiFetch<Member>(`/api/groups/${groupId}/my-ownership`, {
+    method: 'GET',
+  });
+}
+
+// ============================================================================
+// SCHEDULE MANAGEMENT
+// ============================================================================
+
+/**
+ * Schedule interface matching backend response
+ */
+export interface Schedule {
+  scheduleId: number;
+  groupId: number;
+  userId: number;
+  userName: string;
+  groupName: string;
+  ownershipPercentage: number;
+  userColor: string;
+  startTime: string; // ISO 8601 format
+  endTime: string; // ISO 8601 format
+  status: string; // e.g., "pending", "approved", "in_progress", "completed", "cancelled"
+  purpose?: string;
+  batteryLevelBefore?: number;
+  batteryLevelAfter?: number;
+  vehicleCondition?: string;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Get all schedules (optionally filtered by groupId)
+ */
+export async function getSchedules(groupId?: number): Promise<ApiResponse<Schedule[]>> {
+  const url = groupId 
+    ? `/api/schedules?groupId=${groupId}` 
+    : '/api/schedules';
+  
+  return apiFetch<Schedule[]>(url, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get schedule detail by ID
+ */
+export async function getScheduleDetail(scheduleId: number): Promise<ApiResponse<Schedule>> {
+  return apiFetch<Schedule>(`/api/schedules/${scheduleId}`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Create new schedule
+ */
+export async function createSchedule(data: {
+  groupId: number;
+  userId: number;
+  startTime: string; // ISO 8601 format
+  endTime: string; // ISO 8601 format
+  purpose: string;
+}): Promise<ApiResponse<Schedule>> {
+  return apiFetch<Schedule>('/api/schedules', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Update schedule
+ */
+export async function updateSchedule(
+  scheduleId: number,
+  data: {
+    startTime?: string;
+    endTime?: string;
+    purpose?: string;
+    status?: string;
+  }
+): Promise<ApiResponse<Schedule>> {
+  return apiFetch<Schedule>(`/api/schedules/${scheduleId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Delete/cancel schedule
+ */
+export async function deleteSchedule(scheduleId: number): Promise<ApiResponse<string>> {
+  return apiFetch<string>(`/api/schedules/${scheduleId}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * Check-in: Start using vehicle
+ */
+export async function checkInSchedule(
+  scheduleId: number,
+  data: {
+    batteryLevelBefore: number;
+    notes?: string;
+  }
+): Promise<ApiResponse<Schedule>> {
+  return apiFetch<Schedule>(`/api/schedules/${scheduleId}/check-in`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * Check-out: Finish using vehicle
+ */
+export async function checkOutSchedule(
+  scheduleId: number,
+  data: {
+    batteryLevelAfter: number;
+    vehicleCondition: string;
+    notes?: string;
+  }
+): Promise<ApiResponse<Schedule>> {
+  return apiFetch<Schedule>(`/api/schedules/${scheduleId}/check-out`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+}
+

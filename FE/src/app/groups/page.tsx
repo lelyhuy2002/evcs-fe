@@ -1,984 +1,316 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import styles from "./page.module.css";
-import Header from "@/components/Header/Header";
-import { mockApi } from '@/lib/mockApi';
-import { GROUPS_TO_JOIN, MY_GROUPS, type GroupToJoin, type MyGroup } from '@/lib/groupsData';
-import { useRouter } from "next/navigation";
-import { apiService } from "@/lib/api";
-import { useUserGroups } from "@/hooks/useUserGroups";
-import { 
-  Users, Search, FileText, MapPin, Target, User, Calendar, 
-  CalendarDays, CreditCard, TrendingUp, Settings, X, Clock, 
-  CheckCircle2, XCircle, AlertTriangle, DollarSign, Star, 
-  Square, CheckCircle, Sparkles 
-} from "lucide-react";
+import { useState, useEffect } from 'react';
+import { getAllGroups, getMyGroups, getGroupMembers, Group, Member } from '@/lib/api';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
-// Group List Item Component for List View
-function GroupListItem({ group, onJoin, onViewDetails, isRequested }: { 
-  group: GroupToJoin; 
-  onJoin: (id: string) => void; 
-  onViewDetails: (id: string) => void; 
-  isRequested?: boolean;
-}) {
-  return (
-    <article className={`${styles.listItem} ${styles[group.color]}`}>
-      {/* Status Badge - Moved to top for better visibility */}
-      <div className={styles.statusBadgeContainer}>
-        <span className={`${styles.statusBadge} ${styles[`status${group.status.charAt(0).toUpperCase() + group.status.slice(1)}`]}`}>
-          {group.status === "open" ? (
-            <><CheckCircle size={14} style={{display: 'inline', marginRight: '4px'}} /> Còn trống</>
-          ) : (
-            <><XCircle size={14} style={{display: 'inline', marginRight: '4px'}} /> Đã đầy</>
-          )}
-        </span>
-      </div>
+type TabType = 'explore' | 'my-groups';
 
-      <div className={styles.listItemHeader}>
-        <div className={styles.vehicleIcon}>{group.icon}</div>
-        <div className={styles.vehicleInfo}>
-          <h3 className={styles.vehicleName}>{group.vehicleName}</h3>
-          <p className={styles.vehicleModel}>{group.vehicleModel}</p>
-          <div className={styles.rating}>
-            <span className={styles.stars}>{"★".repeat(Math.floor(group.rating))}</span>
-            <span className={styles.ratingValue}>{group.rating}</span>
-            <span className={styles.reviewCount}>({group.reviewCount})</span>
-          </div>
-        </div>
-        <div className={styles.priceSection}>
-          <div className={styles.priceRange}>{group.priceRange}</div>
-        </div>
-      </div>
-
-      <div className={styles.listItemContent}>
-        <div className={styles.memberStats}>
-          <div className={styles.statItem}>
-            <span className={styles.statNumber}>{group.currentMembers}</span>
-            <span className={styles.statLabel}>Thành viên</span>
-          </div>
-          <div className={styles.statItem}>
-            <span className={styles.statNumber}>{group.maxMembers - group.currentMembers}</span>
-            <span className={styles.statLabel}>Cần thêm</span>
-          </div>
-          <div className={styles.statItem}>
-            <span className={styles.statNumber}>{group.ownershipAvailable}%</span>
-            <span className={styles.statLabel}>Sở hữu còn lại</span>
-          </div>
-        </div>
-
-        <div className={styles.groupMeta}>
-          <div className={styles.metaItem}>
-            <MapPin size={16} className={styles.metaIcon} />
-            <span>{group.region}</span>
-          </div>
-          <div className={styles.metaItem}>
-            <Target size={16} className={styles.metaIcon} />
-            <span>{group.purpose}</span>
-          </div>
-          <div className={styles.metaItemCompact}>
-            <User size={14} className={styles.metaIcon} />
-            <span className={styles.adminNameCompact}>{group.adminName}</span>
-          </div>
-          <div className={styles.metaItem}>
-            <Calendar size={16} className={styles.metaIcon} />
-            <span>{group.createdDate}</span>
-          </div>
-        </div>
-      </div>
-
-      <div className={styles.listItemActions}>
-        <button
-          className={styles.primaryActionBtn}
-          onClick={() => onJoin(group.id)}
-          disabled={group.status === "full" || isRequested}
-        >
-          {group.status === "full" ? "Đã đầy" : isRequested ? "Đã gửi yêu cầu" : "Tham gia ngay"}
-        </button>
-        <button
-          className={styles.secondaryActionBtn}
-          onClick={() => onViewDetails(group.id)}
-        >
-          Xem chi tiết
-        </button>
-      </div>
-    </article>
-  );
+interface GroupWithMembers extends Group {
+  actualMembersCount?: number;
+  actualOwnership?: number;
 }
-
-// GroupCard component removed - using list view only for better UX
-
-// types moved to lib/groupsData
-
-// DiscoverGroup interface removed - consolidated functionality
-
-// types moved to lib/groupsData
-
-// data moved to lib/groupsData
-
-// DISCOVER_GROUPS removed - consolidated into GROUPS_TO_JOIN for better UX
-
-// data moved to lib/groupsData
 
 export default function GroupsPage() {
-  const [activeTab, setActiveTab] = useState<"mine" | "discover" | "requests">("mine");
-  const [query, setQuery] = useState("");
-  const [inviteCode, setInviteCode] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [regionFilter, setRegionFilter] = useState("");
-  const [vehicleFilter, setVehicleFilter] = useState("");
-  const [priceRange, setPriceRange] = useState([0, 5000000]);
-  const [showAIRecommendations, setShowAIRecommendations] = useState(false);
-  const [myRequests, setMyRequests] = useState<any[]>([]);
-  const [sortBy, setSortBy] = useState("newest");
-  const [showFullGroups, setShowFullGroups] = useState(false);
   const router = useRouter();
-  
-  // Modal state
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [modalStep, setModalStep] = useState<1 | 2 | 3>(1);
-  const { user } = useUserGroups();
-  
-  // Form states for modal
-  const [groupName, setGroupName] = useState("");
-  const [description, setDescription] = useState("");
-  const [vehicleId, setVehicleId] = useState("");
-  const [estimatedValue, setEstimatedValue] = useState("");
-  const [maxMembers, setMaxMembers] = useState("");
-  const [minOwnershipPercentage, setMinOwnershipPercentage] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-
-  // Auto-hide error/success messages after 3 seconds
-  useEffect(() => {
-    if (formError) {
-      const timer = setTimeout(() => {
-        setFormError(null);
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [formError]);
+  const [activeTab, setActiveTab] = useState<TabType>('explore');
+  const [groups, setGroups] = useState<GroupWithMembers[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    if (successMessage) {
-      const timer = setTimeout(() => {
-        setSuccessMessage(null);
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [successMessage]);
-  // Poll my join requests to fill Requests tab
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const raw = localStorage.getItem('currentUser');
-        if (!raw) { setMyRequests([]); return; }
-        const user = JSON.parse(raw);
-        const reqs = await mockApi.getJoinRequests();
-        if (!alive) return;
-        setMyRequests(reqs.filter((r:any)=> r.userId === user.id).sort((a:any,b:any)=> new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime()));
-      } catch {}
-    }
-    load();
-    const t = setInterval(load, 2000);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
+    fetchGroups();
+  }, [activeTab]);
 
-  // AI Recommendations based on user behavior
-  const aiRecommendations = [
-    {
-      id: "ai-rec-01",
-      title: "Dựa trên lịch sử của bạn",
-      groups: GROUPS_TO_JOIN.filter(g => g.region === "Hà Nội" && g.rating >= 4.5).slice(0, 2)
-    },
-    {
-      id: "ai-rec-02", 
-      title: "Xu hướng phổ biến",
-      groups: GROUPS_TO_JOIN.filter(g => g.rating >= 4.7).slice(0, 2)
-    }
-  ];
-
-  const handleNavClick = (index: number) => {
-    // Map navigation indices to routes
-    const routes = ["/home", "/groups", "/dashboard", "/about", "/contact"];
-    if (routes[index]) {
-      router.push(routes[index]);
-    }
-  };
-
-  const myGroups = useMemo(() => {
-    return MY_GROUPS.filter(g => query ? (g.name + " " + g.description).toLowerCase().includes(query.toLowerCase()) : true);
-  }, [query]);
-
-  // Removed discoverGroups as it's no longer used after consolidation
-
-  const filteredGroupsToJoin = useMemo(() => {
-    return GROUPS_TO_JOIN.filter(group => {
-      const matchesSearch = searchQuery 
-        ? (group.vehicleName + " " + group.vehicleModel + " " + group.region + " " + group.purpose)
-            .toLowerCase().includes(searchQuery.toLowerCase())
-        : true;
-      
-      const matchesRegion = regionFilter ? group.region === regionFilter : true;
-      const matchesVehicle = vehicleFilter ? group.vehicleName === vehicleFilter : true;
-      
-      // Parse price range for filtering (simplified)
-      const groupPrice = group.priceRange.includes("1-2M") ? 1500000 : 
-                        group.priceRange.includes("2-3M") ? 2500000 : 
-                        group.priceRange.includes("3-4M") ? 3500000 : 2000000;
-      const matchesPrice = groupPrice >= priceRange[0] && groupPrice <= priceRange[1];
-      
-      return matchesSearch && matchesRegion && matchesVehicle && matchesPrice;
-    });
-  }, [searchQuery, regionFilter, vehicleFilter, priceRange]);
-
-  // Separate open and full groups
-  const { openGroups, fullGroups } = useMemo(() => {
-    const open = filteredGroupsToJoin.filter(group => group.status === "open");
-    const full = filteredGroupsToJoin.filter(group => group.status === "full");
-    
-    // Sort groups based on selected criteria
-    const sortGroups = (groups: typeof GROUPS_TO_JOIN) => {
-      return [...groups].sort((a, b) => {
-        switch (sortBy) {
-          case "newest":
-            return new Date(b.createdDate.split('/').reverse().join('-')).getTime() - 
-                   new Date(a.createdDate.split('/').reverse().join('-')).getTime();
-          case "rating":
-            return b.rating - a.rating;
-          case "members":
-            return b.currentMembers - a.currentMembers;
-          case "price":
-            const priceA = a.priceRange.includes("1-2M") ? 1500000 : 
-                          a.priceRange.includes("2-3M") ? 2500000 : 
-                          a.priceRange.includes("3-4M") ? 3500000 : 2000000;
-            const priceB = b.priceRange.includes("1-2M") ? 1500000 : 
-                          b.priceRange.includes("2-3M") ? 2500000 : 
-                          b.priceRange.includes("3-4M") ? 3500000 : 2000000;
-            return priceA - priceB;
-          default:
-            return 0;
-        }
-      });
-    };
-    
-    return {
-      openGroups: sortGroups(open),
-      fullGroups: sortGroups(full)
-    };
-  }, [filteredGroupsToJoin, sortBy]);
-
-  // Event handlers
-  const handleJoinGroup = async (groupId: string) => {
-    // read current user from localStorage (mock)
-    const raw = localStorage.getItem('currentUser');
-    if (!raw) {
-      alert('Vui lòng đăng ký/đăng nhập trước khi tham gia nhóm (demo)');
-      return;
-    }
-    const user = JSON.parse(raw);
+  const fetchGroups = async () => {
+    setLoading(true);
+    setError('');
     try {
-      await mockApi.requestJoin(groupId, user.id, user.fullName || user.username, 'Xin tham gia (demo)');
-      alert(`Đã gửi yêu cầu tham gia nhóm ${groupId}. Admin sẽ xem xét và phản hồi.`);
+      const response = activeTab === 'explore' 
+        ? await getAllGroups() 
+        : await getMyGroups();
+      
+      if (response.success) {
+        // Fetch member details for each group
+        const groupsWithMembers = await Promise.all(
+          response.data.map(async (group) => {
+            try {
+              const membersResponse = await getGroupMembers(group.id);
+              if (membersResponse.success && membersResponse.data) {
+                // Calculate actual members count (approved members only)
+                const approvedMembers = membersResponse.data.filter(
+                  (m: Member) => m.joinStatus === 'Approved'
+                );
+                const actualMembersCount = approvedMembers.length;
+                
+                // Calculate actual ownership (sum of approved members' ownership)
+                const actualOwnership = approvedMembers.reduce(
+                  (sum: number, m: Member) => sum + (m.ownershipPercentage || 0),
+                  0
+                );
+                
+                return {
+                  ...group,
+                  actualMembersCount,
+                  actualOwnership
+                };
+              }
+            } catch (err) {
+              console.log(`Cannot fetch members for group ${group.id}:`, err);
+            }
+            return group;
+          })
+        );
+        
+        setGroups(groupsWithMembers);
+      } else {
+        setError(response.message);
+      }
     } catch (err) {
-      console.error(err);
-      alert('Không thể gửi yêu cầu, thử lại sau');
+      const errorMessage = err instanceof Error ? err.message : 'Không thể tải danh sách nhóm';
+      setError(errorMessage);
+      
+      // Redirect to login if unauthorized
+      if (errorMessage.includes('đăng nhập') || errorMessage.includes('Unauthorized')) {
+        setTimeout(() => {
+          router.push('/login');
+        }, 2000);
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleViewDetails = (groupId: string) => {
-    // For vehicle details, route to /vehicles/[id]
-    router.push(`/vehicles/${groupId}`);
+  const getStatusColor = (status: string, isLocked?: boolean) => {
+    // If locked, always show red
+    if (isLocked) {
+      return 'bg-red-100 text-red-700';
+    }
+    
+    switch (status.toLowerCase()) {
+      case 'active':
+        return 'bg-green-100 text-green-700';
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-700';
+      case 'closed':
+        return 'bg-gray-100 text-gray-700';
+      default:
+        return 'bg-blue-100 text-blue-700';
+    }
+  };
+
+  const getApprovalColor = (status: string) => {
+    switch (status.toLowerCase()) {
+      case 'approved':
+        return 'bg-emerald-100 text-emerald-700';
+      case 'pending':
+        return 'bg-orange-100 text-orange-700';
+      case 'rejected':
+        return 'bg-red-100 text-red-700';
+      default:
+        return 'bg-gray-100 text-gray-700';
+    }
+  };
+
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('vi-VN', {
+      style: 'currency',
+      currency: 'VND',
+    }).format(value);
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('vi-VN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
   };
 
   return (
-    <>
-      <Header />
-      
-      {/* Success Message */}
-      {successMessage && (
-        <div className={styles.successAlert}>
-          <CheckCircle2 size={18} style={{display: 'inline', marginRight: '8px'}} /> {successMessage}
-        </div>
-      )}
-
-      <main className={styles.container}>
-      <div className={styles.actionsBar}>
-        <input
-          className={styles.inviteInput}
-          placeholder="Nhập mã mời hoặc dán liên kết nhóm để tham gia"
-          value={inviteCode}
-          onChange={(e) => setInviteCode(e.target.value)}
-        />
-        <button className={styles.secondaryBtn} onClick={() => {/* future: validate & join */}}>Tham gia</button>
-        <button className={styles.primaryBtn} onClick={() => setShowCreateModal(true)}>Tạo nhóm mới</button>
-        <div className={styles.helperText}>
-          Dán liên kết mời từ bạn bè hoặc nhấn &quot;Tạo nhóm mới&quot; để bắt đầu. Người tạo sẽ trở thành Admin nhóm.
-        </div>
-      </div>
-      <div className={styles.pageHeader}>
-        <div className={styles.headerContent}>
-          <div className={styles.titleSection}>
-            <h1 className={styles.title}>Quản lý nhóm</h1>
-            <p className={styles.subtitle}>Kết nối cộng đồng người dùng xe điện thông minh</p>
-          </div>
-          <div className={styles.tabs}>
-            <button className={`${styles.tabBtn} ${activeTab === "mine" ? styles.tabActive : ""}`} onClick={() => setActiveTab("mine")}>
-              <Users size={20} />
-              <span>Nhóm của tôi</span>
-            </button>
-            <button className={`${styles.tabBtn} ${activeTab === "discover" ? styles.tabActive : ""}`} onClick={() => setActiveTab("discover")}>
-              <Search size={20} />
-              <span>Khám phá nhóm</span>
-            </button>
-            <button className={`${styles.tabBtn} ${activeTab === "requests" ? styles.tabActive : ""}`} onClick={() => setActiveTab("requests")}>
-              <FileText size={20} />
-              <span>Yêu cầu tham gia</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className={styles.toolbar}>
-        <div className={styles.searchContainer}>
-          <Search size={22} className={styles.searchIcon} />
-          <input className={styles.search} placeholder="Tìm kiếm nhóm..." value={query} onChange={(e) => setQuery(e.target.value)} />
-        </div>
-      </div>
-
-      {activeTab === "mine" ? (
-        <section className={styles.enhancedGrid}>
-          {myGroups.map((g) => (
-            <article key={g.id} className={`${styles.enhancedCard} ${styles[g.color]}`}>
-              <div className={styles.cardHeader}>
-                <div className={styles.groupIcon}>{g.icon}</div>
-                <div className={styles.groupInfo}>
-                  <h3 className={styles.groupTitle}>{g.name}</h3>
-                  <div className={styles.groupMeta}>
-                    <span className={styles.memberCount}>{g.memberCount} thành viên</span>
-                    <div className={styles.rating}>
-                      <span className={styles.stars}>{"★".repeat(Math.floor(g.rating))}</span>
-                      <span className={styles.ratingValue}>{g.rating}</span>
-                      <span className={styles.reviewCount}>({g.reviewCount})</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              <div className={styles.vehicleInfo}>
-                <span className={styles.vehicleType}>{g.vehicleType}</span>
-                <span className={styles.monthlyCost}>{g.monthlyCost.toLocaleString()}đ/tháng</span>
-              </div>
-              
-              <p className={styles.groupDesc}>{g.description}</p>
-              
-              <div className={styles.progress}>
-                <div className={styles.progressTrack}>
-                  <div className={styles.progressFill} style={{ width: `${g.myOwnershipPct}%` }} />
-                </div>
-                <div className={styles.progressText}>Tỷ lệ sở hữu của bạn: {g.myOwnershipPct}%</div>
-              </div>
-              
-              <div className={styles.actionGroups}>
-                <div className={styles.primaryActions}>
-                  <Link href={`/groups/${g.id}/schedule`} className={`${styles.primaryBtn}`}>
-                    <CalendarDays size={18} style={{display: 'inline', marginRight: '8px'}} /> <span>Đặt lịch & sử dụng xe</span>
-                  </Link>
-                  <Link href={`/groups/${g.id}/costs`} className={`${styles.primaryBtn}`}>
-                    <CreditCard size={18} style={{display: 'inline', marginRight: '8px'}} /> <span>Chi phí & thanh toán</span>
-                  </Link>
-                </div>
-                <div className={styles.secondaryActions}>
-                  <Link href={`/groups/${g.id}/history`} className={`${styles.secondaryBtn}`}>
-                    <TrendingUp size={18} style={{display: 'inline', marginRight: '8px'}} /> <span>Lịch sử & phân tích</span>
-                  </Link>
-                  <Link href={`/groups/${g.id}/manage`} className={`${styles.secondaryBtn}`}>
-                    <Settings size={18} style={{display: 'inline', marginRight: '8px'}} /> <span>Quản lý nhóm</span>
-                  </Link>
-                </div>
-              </div>
-            </article>
-          ))}
-        </section>
-      ) : activeTab === "discover" ? (
-        <div className={styles.discoverContainer}>
-          {/* Compact Header */}
-          <div className={styles.discoverHeader}>
-            <div className={styles.headerContent}>
-              <h1 className={styles.discoverTitle}>Tìm & Tham gia nhóm</h1>
-              <div className={styles.statsRow}>
-                <div className={styles.statItem}>
-                  <span className={styles.statNumber}>{GROUPS_TO_JOIN.filter(g => g.status === "open").length}</span>
-                  <span className={styles.statLabel}>Nhóm mở</span>
-                </div>
-                <div className={styles.statItem}>
-                  <span className={styles.statNumber}>{GROUPS_TO_JOIN.reduce((sum, g) => sum + (g.maxMembers - g.currentMembers), 0)}</span>
-                  <span className={styles.statLabel}>Vị trí trống</span>
-                </div>
-                <div className={styles.statItem}>
-                  <span className={styles.statNumber}>{GROUPS_TO_JOIN.length}</span>
-                  <span className={styles.statLabel}>Tổng nhóm</span>
-                </div>
-              </div>
+    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-white to-blue-50">
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="mb-8">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h1 className="text-4xl font-bold text-gray-900 mb-2">Nhóm sở hữu xe</h1>
+              <p className="text-gray-600">Khám phá và quản lý các nhóm sở hữu xe điện</p>
+            </div>
+            <div className="flex gap-3">
+              <Link
+                href="/vehicles/create"
+                className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium shadow-md hover:shadow-lg"
+              >
+                Thêm xe
+              </Link>
+              <Link
+                href="/groups/create"
+                className="px-6 py-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors font-medium shadow-md hover:shadow-lg"
+              >
+                Tạo nhóm mới
+              </Link>
             </div>
           </div>
+        </div>
 
-          {/* Unified Search & Filter Section */}
-          <div className={styles.searchFilterSection}>
-            <div className={styles.searchRow}>
-              <div className={styles.searchInputWrapper}>
-                <input
-                  className={styles.searchInput}
-                  placeholder="Tìm kiếm nhóm theo tên xe, khu vực..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                <Search size={20} className={styles.searchIcon} />
-              </div>
-              <button 
-                className={styles.aiToggle}
-                onClick={() => setShowAIRecommendations(!showAIRecommendations)}
-              >
-                <Sparkles size={18} />
-                <span>AI Gợi ý</span>
-              </button>
-            </div>
+        {/* Tabs */}
+        <div className="bg-white rounded-2xl shadow-sm mb-6 p-2 inline-flex gap-2">
+          <button
+            onClick={() => setActiveTab('explore')}
+            className={`px-8 py-3 rounded-xl font-medium transition-all ${
+              activeTab === 'explore'
+                ? 'bg-emerald-600 text-white shadow-md'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            Khám phá nhóm
+          </button>
+          <button
+            onClick={() => setActiveTab('my-groups')}
+            className={`px-8 py-3 rounded-xl font-medium transition-all ${
+              activeTab === 'my-groups'
+                ? 'bg-emerald-600 text-white shadow-md'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            Nhóm của tôi
+          </button>
+        </div>
 
-            <div className={styles.filtersRow}>
-              <select
-                className={styles.filterSelect}
-                value={regionFilter}
-                onChange={(e) => setRegionFilter(e.target.value)}
-              >
-                <option value="">Tất cả khu vực</option>
-                <option value="Hà Nội">Hà Nội</option>
-                <option value="TP.HCM">TP.HCM</option>
-                <option value="Đà Nẵng">Đà Nẵng</option>
-              </select>
-              
-              <select
-                className={styles.filterSelect}
-                value={vehicleFilter}
-                onChange={(e) => setVehicleFilter(e.target.value)}
-              >
-                <option value="">Tất cả xe</option>
-                <option value="Tesla Model 3">Tesla Model 3</option>
-                <option value="Tesla Model Y">Tesla Model Y</option>
-                <option value="VinFast VF8">VinFast VF8</option>
-                <option value="BYD Atto 3">BYD Atto 3</option>
-              </select>
-              
-              <select
-                className={styles.filterSelect}
-                value={priceRange[1]}
-                onChange={(e) => setPriceRange([0, Number(e.target.value)])}
-              >
-                <option value={5000000}>Tất cả giá</option>
-                <option value={1000000}>Dưới 1M</option>
-                <option value={2000000}>1-2M</option>
-                <option value={3000000}>2-3M</option>
-                <option value={4000000}>3-4M</option>
-                <option value={5000000}>Trên 4M</option>
-              </select>
-
-              <div className={styles.sortGroup}>
-                <label>Sắp xếp:</label>
-                <select 
-                  className={styles.sortSelect}
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
-                >
-                  <option value="newest">Mới nhất</option>
-                  <option value="rating">Đánh giá cao</option>
-                  <option value="members">Số thành viên</option>
-                  <option value="price">Giá tham gia</option>
-                </select>
-              </div>
-
-              <button 
-                className={`${styles.filterBtn} ${showFullGroups ? styles.active : ''}`}
-                onClick={() => setShowFullGroups(!showFullGroups)}
-              >
-                {showFullGroups ? <CheckCircle2 size={16} style={{display: 'inline', marginRight: '4px'}} /> : <Square size={16} style={{display: 'inline', marginRight: '4px'}} />} Nhóm đầy
-              </button>
-            </div>
-          </div>
-
-        {/* AI Recommendations - Simplified */}
-        {showAIRecommendations && (
-          <div className={styles.aiSection}>
-            <h3><Sparkles size={20} style={{display: 'inline', marginRight: '8px'}} /> Gợi ý cho bạn</h3>
-            <div className={styles.aiCards}>
-              {aiRecommendations.map((rec) => (
-                <div key={rec.id} className={styles.aiCard}>
-                  <h4>{rec.title}</h4>
-                  <div className={styles.aiGroupList}>
-                    {rec.groups.map((group) => (
-                      <div key={group.id} className={styles.aiGroupItem}>
-                        <span className={styles.aiIcon}>{group.icon}</span>
-                        <div className={styles.aiInfo}>
-                          <div className={styles.aiVehicleName}>{group.vehicleName}</div>
-                          <div className={styles.aiMeta}><MapPin size={14} style={{display: 'inline', marginRight: '4px'}} /> {group.region} • <DollarSign size={14} style={{display: 'inline', marginRight: '4px'}} /> {group.priceRange} • <Star size={14} style={{display: 'inline', marginRight: '4px'}} /> {group.rating}</div>
-                        </div>
-                        <button className={styles.aiJoinBtn} onClick={() => handleJoinGroup(group.id)}>Tham gia</button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+        {/* Loading State */}
+        {loading && (
+          <div className="flex justify-center items-center py-20">
+            <div className="w-16 h-16 border-4 border-emerald-200 border-t-emerald-600 rounded-full animate-spin"></div>
           </div>
         )}
 
-        {/* Groups Section - Always show two categories */}
-        <div className={styles.groupsSection}>
-          {openGroups.length > 0 && (
-            <div className={styles.groupCategory}>
-              <div className={styles.categoryHeader}>
-                <h3 className={styles.categoryTitle}>
-                  <CheckCircle size={18} style={{display: 'inline', marginRight: '8px', color: '#10b981'}} /> Nhóm đang cần thành viên ({openGroups.length})
-                </h3>
-              </div>
-              <div className={styles.groupsList}>
-                {openGroups.map((group) => (
-                  <GroupListItem key={group.id} group={group} onJoin={handleJoinGroup} onViewDetails={handleViewDetails} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {showFullGroups && fullGroups.length > 0 && (
-            <div className={styles.groupCategory}>
-              <div className={styles.categoryHeader}>
-                <h3 className={styles.categoryTitle}>
-                  <XCircle size={18} style={{display: 'inline', marginRight: '8px', color: '#ef4444'}} /> Nhóm đã đầy ({fullGroups.length})
-                </h3>
-              </div>
-              <div className={styles.groupsList}>
-                {fullGroups.map((group) => (
-                  <GroupListItem key={group.id} group={group} onJoin={handleJoinGroup} onViewDetails={handleViewDetails} />
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {filteredGroupsToJoin.length === 0 && (
-          <div className={styles.emptyState}>
-            <div className={styles.emptyIcon}><Search size={48} /></div>
-            <h3>Không tìm thấy nhóm phù hợp</h3>
-            <p>Hãy thử điều chỉnh bộ lọc hoặc tạo nhóm mới.</p>
-            <button className={styles.createGroupBtn} onClick={() => alert('Chức năng tạo nhóm sẽ được triển khai sớm!')}>
-              Tạo nhóm mới
+        {/* Error State */}
+        {error && !loading && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
+            <p className="text-red-800 font-medium">{error}</p>
+            <button
+              onClick={fetchGroups}
+              className="mt-4 px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            >
+              Thử lại
             </button>
           </div>
         )}
-      </div>
-    ) : (
-        /* Tab "Yêu cầu tham gia" */
-        <section className={styles.requestsSection}>
-          <div className={styles.requestsHeader}>
-            <h2>Yêu cầu tham gia của bạn</h2>
-            <p>Theo dõi trạng thái các yêu cầu tham gia nhóm mà bạn đã gửi</p>
-          </div>
 
-          <div className={styles.requestsGrid}>
-            {myRequests.length === 0 ? (
-              <div className={styles.emptyState}>
-                <div className={styles.emptyIcon}><FileText size={48} /></div>
-                <h3>Chưa có yêu cầu nào</h3>
-                <p>Hãy duyệt các nhóm và gửi yêu cầu tham gia.</p>
-                <button className={styles.primaryBtn} onClick={() => setActiveTab("discover")}>Khám phá nhóm</button>
-              </div>
-            ) : (
-              myRequests.map((r:any) => (
-                <article key={r.id} className={styles.requestCard}>
-                  <div className={styles.requestHeader}>
-                    <div className={styles.groupIcon}><Users size={24} /></div>
-                    <div className={styles.requestInfo}>
-                      <h3>Yêu cầu vào nhóm {r.groupId}</h3>
-                      <div className={styles.requestMeta}>
-                        <span className={`${styles.status} ${r.status === 'pending' ? '' : r.status === 'approved' ? styles.approved : styles.rejected}`}>
-                          {r.status === 'pending' ? (
-                            <><Clock size={14} style={{display: 'inline', marginRight: '4px'}} /> Đang chờ duyệt</>
-                          ) : r.status === 'approved' ? (
-                            <><CheckCircle2 size={14} style={{display: 'inline', marginRight: '4px'}} /> Đã chấp nhận</>
-                          ) : (
-                            <><XCircle size={14} style={{display: 'inline', marginRight: '4px'}} /> Từ chối</>
-                          )}
-                        </span>
-                        <span className={styles.date}>Gửi: {new Date(r.createdAt).toLocaleString('vi-VN')}</span>
-                      </div>
-                    </div>
-                  </div>
-                  {r.message && (
-                    <div className={styles.requestDetails}>
-                      <div className={styles.detailRow}>
-                        <span>Lời nhắn:</span>
-                        <span>{r.message}</span>
-                      </div>
-                    </div>
-                  )}
-                </article>
-              ))
-            )}
-          </div>
-
-          {false && ( /* Show when no requests */
-            <div className={styles.emptyState}>
-              <div className={styles.emptyIcon}><FileText size={48} /></div>
-              <h3>Chưa có yêu cầu tham gia nào</h3>
-              <p>Hãy khám phá các nhóm có sẵn và gửi yêu cầu tham gia để bắt đầu hành trình chia sẻ xe điện.</p>
-              <button className={styles.primaryBtn} onClick={() => setActiveTab("discover")}>
-                Khám phá nhóm
-              </button>
+        {/* Empty State */}
+        {!loading && !error && groups.length === 0 && (
+          <div className="bg-white rounded-2xl shadow-sm p-12 text-center">
+            <div className="w-24 h-24 bg-gray-100 rounded-full mx-auto mb-4 flex items-center justify-center">
+              <span className="text-4xl text-gray-400">🚗</span>
             </div>
-          )}
-        </section>
-      )}
+            <h3 className="text-xl font-bold text-gray-900 mb-2">
+              {activeTab === 'explore' ? 'Chưa có nhóm nào' : 'Bạn chưa tham gia nhóm nào'}
+            </h3>
+            <p className="text-gray-600">
+              {activeTab === 'explore'
+                ? 'Hiện tại chưa có nhóm sở hữu nào được tạo'
+                : 'Khám phá các nhóm để tham gia ngay'}
+            </p>
+          </div>
+        )}
 
-      {/* Create Group Modal */}
-      {showCreateModal && (
-        <div className={styles.modalOverlay} onClick={() => {
-          setShowCreateModal(false);
-          setModalStep(1);
-          setGroupName("");
-          setDescription("");
-          setVehicleId("");
-          setEstimatedValue("");
-          setMaxMembers("");
-          setMinOwnershipPercentage("");
-          setFormError(null);
-        }}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.modalHeader}>
-              <h2 className={styles.modalTitle}>Tạo nhóm mới</h2>
-              <button 
-                className={styles.modalClose}
-                onClick={() => {
-                  setShowCreateModal(false);
-                  setModalStep(1);
-                  setGroupName("");
-                  setDescription("");
-                  setVehicleId("");
-                  setEstimatedValue("");
-                  setMaxMembers("");
-                  setMinOwnershipPercentage("");
-                  setFormError(null);
-                }}
+        {/* Groups Grid */}
+        {!loading && !error && groups.length > 0 && (
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {groups.map((group) => (
+              <Link
+                key={group.id}
+                href={`/groups/${group.id}`}
+                className="group"
               >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Progress Steps */}
-            <div className={styles.modalProgress}>
-              <div className={styles.progressSteps} data-step={modalStep}>
-                <div className={`${styles.progressStep} ${modalStep === 1 ? styles.active : ''} ${modalStep > 1 ? styles.completed : ''}`}>
-                  <div className={styles.stepNumber}>1</div>
-                  <div className={styles.stepLabel}>Thông tin</div>
-                </div>
-                <div className={`${styles.progressStep} ${modalStep === 2 ? styles.active : ''} ${modalStep > 2 ? styles.completed : ''}`}>
-                  <div className={styles.stepNumber}>2</div>
-                  <div className={styles.stepLabel}>Chi tiết xe</div>
-                </div>
-                <div className={`${styles.progressStep} ${modalStep === 3 ? styles.active : ''}`}>
-                  <div className={styles.stepNumber}>3</div>
-                  <div className={styles.stepLabel}>Xác nhận</div>
-                </div>
-              </div>
-            </div>
-
-            {formError && (
-              <div className={styles.errorAlert}>
-                <AlertTriangle size={18} style={{display: 'inline', marginRight: '8px'}} /> {formError}
-              </div>
-            )}
-
-            {/* Step 1: Basic Info */}
-            {modalStep === 1 && (
-              <div className={styles.modalBody}>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    Tên nhóm <span className={styles.required}>*</span>
-                  </label>
-                  <input
-                    type="text"
-                    className={styles.formInput}
-                    placeholder="VD: EV Shared Hanoi"
-                    value={groupName}
-                    onChange={(e) => setGroupName(e.target.value)}
-                  />
-                </div>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    Mô tả <span className={styles.required}>*</span>
-                  </label>
-                  <textarea
-                    className={styles.formTextarea}
-                    placeholder="Mô tả ngắn về nhóm của bạn..."
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    rows={4}
-                  />
-                </div>
-                <div className={styles.modalActions}>
-                  <button
-                    className={styles.btnSecondary}
-                    onClick={() => {
-                      setShowCreateModal(false);
-                      setModalStep(1);
-                    }}
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    className={styles.btnPrimary}
-                    onClick={() => {
-                      if (!groupName || !description) {
-                        setFormError("Vui lòng điền đầy đủ thông tin");
-                        return;
-                      }
-                      setFormError(null);
-                      setModalStep(2);
-                    }}
-                  >
-                    Tiếp tục
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Step 2: Vehicle Details */}
-            {modalStep === 2 && (
-              <div className={styles.modalBody}>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    ID Xe <span className={styles.required}>*</span>
-                  </label>
-                  <input
-                    type="text"
-                    className={styles.formInput}
-                    placeholder="Nhập ID xe của bạn"
-                    value={vehicleId}
-                    onChange={(e) => setVehicleId(e.target.value)}
-                  />
-                  <small className={styles.formHint}>
-                    ID xe từ hệ thống quản lý xe của bạn
-                  </small>
-                </div>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    Giá trị ước tính (VND) <span className={styles.required}>*</span>
-                  </label>
-                  <input
-                    type="text"
-                    className={styles.formInput}
-                    placeholder="VD: 800000000"
-                    value={estimatedValue}
-                    onChange={(e) => setEstimatedValue(e.target.value)}
-                  />
-                  <small className={styles.formHint}>
-                    Giá trị hiện tại của xe điện
-                  </small>
-                </div>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    Số thành viên tối đa <span className={styles.required}>*</span>
-                  </label>
-                  <input
-                    type="text"
-                    className={styles.formInput}
-                    placeholder="VD: 5"
-                    value={maxMembers}
-                    onChange={(e) => setMaxMembers(e.target.value)}
-                  />
-                  <small className={styles.formHint}>
-                    Từ 2 đến 10 thành viên
-                  </small>
-                </div>
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>
-                    Tỷ lệ sở hữu tối thiểu (%) <span className={styles.required}>*</span>
-                  </label>
-                  <div className={styles.percentageInputContainer}>
-                    <input
-                      type="text"
-                      className={styles.formInput}
-                      placeholder="VD: 10"
-                      value={minOwnershipPercentage}
-                      onChange={(e) => setMinOwnershipPercentage(e.target.value)}
-                    />
-                    <div className={styles.percentageCircle}>
-                      <svg className={styles.circularProgress} width="60" height="60">
-                        <circle
-                          className={styles.progressTrack}
-                          cx="30"
-                          cy="30"
-                          r="25"
-                          fill="transparent"
-                          stroke="#e5e7eb"
-                          strokeWidth="4"
-                        />
-                        <circle
-                          className={styles.progressBar}
-                          cx="30"
-                          cy="30"
-                          r="25"
-                          fill="transparent"
-                          stroke="#10b981"
-                          strokeWidth="4"
-                          strokeLinecap="round"
-                          strokeDasharray={`${(parseFloat(minOwnershipPercentage) || 0) * 1.57} 157`}
-                          transform="rotate(-90 30 30)"
-                        />
-                      </svg>
-                      <div className={styles.percentageText}>
-                        {minOwnershipPercentage || 0}%
-                      </div>
+                <div className="bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden h-full border border-gray-100 hover:border-emerald-200">
+                  {/* Card Header */}
+                  <div className="bg-gradient-to-r from-emerald-500 to-blue-500 p-6 text-white">
+                    <div className="flex justify-between items-start mb-3">
+                      <h3 className="text-xl font-bold line-clamp-1 flex-1">
+                        {group.name}
+                      </h3>
                     </div>
-                  </div>
-                  <small className={styles.formHint}>
-                    Tỷ lệ sở hữu tối thiểu để tham gia nhóm (5-50%)
-                  </small>
-                </div>
-                <div className={styles.modalActions}>
-                  <button
-                    className={styles.btnSecondary}
-                    onClick={() => setModalStep(1)}
-                  >
-                    Quay lại
-                  </button>
-                  <button
-                    className={styles.btnPrimary}
-                    onClick={() => {
-                      if (!vehicleId || !estimatedValue || !maxMembers || !minOwnershipPercentage) {
-                        setFormError("Vui lòng điền đầy đủ thông tin xe và cài đặt nhóm");
-                        return;
-                      }
-                      setFormError(null);
-                      setModalStep(3);
-                    }}
-                  >
-                    Tiếp tục
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Step 3: Confirmation */}
-            {modalStep === 3 && (
-              <div className={styles.modalBody}>
-                <div className={styles.summaryCard}>
-                  <h3 className={styles.summaryTitle}>Thông tin nhóm</h3>
-                  <div className={styles.summaryGrid}>
-                    <div className={styles.summaryItem}>
-                      <span className={styles.summaryLabel}>Tên nhóm:</span>
-                      <span className={styles.summaryValue}>{groupName}</span>
-                    </div>
-                    <div className={styles.summaryItem}>
-                      <span className={styles.summaryLabel}>Mô tả:</span>
-                      <span className={styles.summaryValue}>{description}</span>
-                    </div>
-                    <div className={styles.summaryItem}>
-                      <span className={styles.summaryLabel}>ID Xe:</span>
-                      <span className={styles.summaryValue}>{vehicleId}</span>
-                    </div>
-                    <div className={styles.summaryItem}>
-                      <span className={styles.summaryLabel}>Giá trị ước tính:</span>
-                      <span className={styles.summaryValue}>
-                        {parseInt(estimatedValue).toLocaleString()} VND
+                    <p className="text-sm text-white/90 line-clamp-2 mb-3">
+                      {group.description}
+                    </p>
+                    <div className="flex gap-2 flex-wrap">
+                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(group.status, group.isLocked)} bg-white/90`}>
+                        {group.isLocked ? 'locked' : group.status}
+                      </span>
+                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${getApprovalColor(group.approvalStatus)} bg-white/90`}>
+                        {group.approvalStatus}
                       </span>
                     </div>
-                    <div className={styles.summaryItem}>
-                      <span className={styles.summaryLabel}>Số thành viên tối đa:</span>
-                      <span className={styles.summaryValue}>{maxMembers} người</span>
+                  </div>
+
+                  {/* Card Body */}
+                  <div className="p-6 space-y-4">
+                    {/* Vehicle Info */}
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <p className="text-xs text-gray-500 mb-1">Phương tiện</p>
+                      <p className="font-bold text-gray-900 text-lg">
+                        {group.vehicleBrand} {group.vehicleModel}
+                      </p>
+                      <p className="text-sm text-gray-600 font-mono">
+                        {group.vehicleLicensePlate}
+                      </p>
                     </div>
-                    <div className={styles.summaryItem}>
-                      <span className={styles.summaryLabel}>Tỷ lệ sở hữu tối thiểu:</span>
-                      <span className={styles.summaryValue}>{minOwnershipPercentage}%</span>
+
+                    {/* Financial Info */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="bg-emerald-50 rounded-lg p-3">
+                        <p className="text-xs text-emerald-700 mb-1">Giá trị ước tính</p>
+                        <p className="font-bold text-emerald-900 text-sm">
+                          {formatCurrency(group.estimatedValue)}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Ownership Info */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">Thành viên</span>
+                        <span className="font-semibold text-gray-900">
+                          {group.actualMembersCount ?? group.currentMembers} / {group.maxMembers}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">Sở hữu tối thiểu</span>
+                        <span className="font-semibold text-gray-900">
+                          {group.minOwnershipPercentage}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2.5">
+                        <div
+                          className="bg-emerald-600 h-2.5 rounded-full transition-all"
+                          style={{ width: `${group.actualOwnership ?? group.currentOwnership}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-xs text-gray-600 text-right">
+                        Đã sở hữu: {group.actualOwnership ?? group.currentOwnership}%
+                      </p>
+                    </div>
+
+                    {/* Footer Info */}
+                    <div className="pt-4 border-t border-gray-100">
+                      <div className="flex justify-between items-center text-xs text-gray-500">
+                        <span>Tạo bởi {group.createdByName}</span>
+                        <span>{formatDate(group.createdAt)}</span>
+                      </div>
                     </div>
                   </div>
+
+                  {/* Hover Effect */}
+                  <div className="absolute inset-0 bg-emerald-600 opacity-0 group-hover:opacity-5 transition-opacity pointer-events-none"></div>
                 </div>
-                <div className={styles.modalActions}>
-                  <button
-                    className={styles.btnSecondary}
-                    onClick={() => setModalStep(2)}
-                    disabled={submitting}
-                  >
-                    Quay lại
-                  </button>
-                  <button
-                    className={styles.btnPrimary}
-                    onClick={async () => {
-                      setSubmitting(true);
-                      setFormError(null);
-                      try {
-                        let userId: number;
-                        const storedUser = localStorage.getItem('currentUser');
-                        if (storedUser) {
-                          const parsedUser = JSON.parse(storedUser);
-                          userId = parsedUser.userId || parsedUser.id;
-                        } else if (user?.id) {
-                          userId = typeof user.id === 'number' ? user.id : parseInt(user.id);
-                        } else {
-                          setFormError("Không tìm thấy thông tin người dùng");
-                          return;
-                        }
-
-                        const response = await apiService.createGroup({
-                          vehicleId: parseInt(vehicleId),
-                          groupName,
-                          description,
-                          estimatedValue: parseFloat(estimatedValue),
-                          maxMembers: parseInt(maxMembers),
-                          minOwnershipPercentage: parseFloat(minOwnershipPercentage)
-                        }, userId);
-
-                        const isActualSuccess = response.success && 
-                          !response.message.includes("thuộc nhóm khác") &&
-                          !response.message.includes("chờ duyệt") &&
-                          !response.message.includes("Lỗi") &&
-                          !response.message.includes("không phải chủ sở hữu");
-
-                        if (isActualSuccess) {
-                          setSuccessMessage(response.message || "Tạo nhóm thành công!");
-                          setShowCreateModal(false);
-                          setModalStep(1);
-                          setGroupName("");
-                          setDescription("");
-                          setVehicleId("");
-                          setEstimatedValue("");
-                          setMaxMembers("");
-                          setMinOwnershipPercentage("");
-                          setTimeout(() => {
-                            window.location.reload();
-                          }, 3000);
-                        } else {
-                          setFormError(response.message);
-                        }
-                      } catch (err: any) {
-                        setFormError(err.message || "Không tạo được nhóm");
-                      } finally {
-                        setSubmitting(false);
-                      }
-                    }}
-                    disabled={submitting}
-                  >
-                    {submitting ? "Đang tạo..." : "Tạo nhóm"}
-                  </button>
-                </div>
-              </div>
-            )}
+              </Link>
+            ))}
           </div>
-        </div>
-      )}
-      </main>
-    </>
+        )}
+      </div>
+    </div>
   );
 }
-
-

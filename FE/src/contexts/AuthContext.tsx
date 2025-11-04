@@ -1,136 +1,83 @@
-"use client";
+'use client';
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
-import { apiService, LoginRequest, LoginResponse, ApiError } from '@/lib/api';
-import mockApi, { User as MockUser } from '@/lib/mockApi';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { checkLoginStatus, logout as apiLogout } from '@/lib/api';
 
 interface User {
   userId: number;
-  fullName: string;
   email: string;
+  fullName: string;
   role: string;
+  verificationStatus: string;
 }
 
 interface AuthContextType {
   user: User | null;
-  isLoading: boolean;
-  login: (credentials: LoginRequest) => Promise<{ success: boolean; message: string }>
-  logout: () => void;
-  isAuthenticated: boolean;
+  loading: boolean;
+  login: (userData: User) => void;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const useAuth = () => {
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Check authentication status on mount
+  const checkAuth = async () => {
+    try {
+      const response = await checkLoginStatus();
+      if (response.success && response.data.isAuthenticated) {
+        setUser({
+          userId: response.data.userId!,
+          email: response.data.email!,
+          fullName: '', // Will be populated when needed
+          role: response.data.role!,
+          verificationStatus: '',
+        });
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  const login = (userData: User) => {
+    setUser(userData);
+  };
+
+  const logout = async () => {
+    try {
+      await apiLogout();
+      setUser(null);
+      window.location.href = '/login';
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
+  };
+
+  const refreshUser = async () => {
+    await checkAuth();
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, login, logout, refreshUser }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
-};
-
-interface AuthProviderProps {
-  children: ReactNode;
 }
-
-export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const router = useRouter();
-
-  // Check for existing user session on mount
-  useEffect(() => {
-    const checkAuth = () => {
-      try {
-        const storedUser = localStorage.getItem('currentUser');
-        if (storedUser) {
-          setUser(JSON.parse(storedUser));
-        }
-      } catch (error) {
-        console.error('Error checking auth:', error);
-        localStorage.removeItem('currentUser');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    checkAuth();
-  }, []);
-
-  const login = async (credentials: LoginRequest): Promise<{ success: boolean; message: string }> => {
-    try {
-      setIsLoading(true);
-
-      // Removed mock pre-check; rely on backend validation only
-
-      const response: LoginResponse = await apiService.login(credentials);
-      
-      console.log('Login response:', response); // Debug log
-      
-      if (response.success) {
-        // Normalize role to lowercase for consistent handling
-        const normalizedRole = response.role?.toLowerCase() || 'user';
-        
-        console.log('Normalized role:', normalizedRole); // Debug log
-        
-        const userData: User = {
-          userId: response.userId,
-          fullName: response.fullName,
-          email: response.email,
-          role: normalizedRole,
-        };
-        
-        setUser(userData);
-        localStorage.setItem('currentUser', JSON.stringify(userData));
-        
-        // Redirect based on role (case-insensitive)
-        console.log('Redirecting to:', normalizedRole === 'admin' ? '/admin' : '/dashboard'); // Debug log
-        
-        if (normalizedRole === 'admin') {
-          router.push('/admin');
-        } else {
-          router.push('/dashboard');
-        }
-        
-        return { success: true, message: response.message };
-      } else {
-        return { success: false, message: response.message };
-      }
-    } catch (error) {
-      console.error('Login error:', error);
-      if (error instanceof ApiError) {
-        return { 
-          success: false, 
-          message: error.message 
-        };
-      }
-      return { 
-        success: false, 
-        message: 'Đăng nhập thất bại. Vui lòng thử lại.' 
-      };
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('currentUser');
-    router.push('/login');
-  };
-
-  const value: AuthContextType = {
-    user,
-    isLoading,
-    login,
-    logout,
-    isAuthenticated: !!user,
-  };
-
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
-};
